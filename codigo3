@@ -1,0 +1,45 @@
+int pot = 34;
+
+int r = 14;
+int g = 27;
+int b = 26;
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(r, OUTPUT);
+  pinMode(g, OUTPUT);
+  pinMode(b, OUTPUT);
+}
+
+void loop() {
+  int valor = analogRead(pot);
+
+  int vermelho = 0, verde = 0, azul = 0;
+
+  if (valor < 1365) {
+    vermelho = map(valor, 0, 1365, 0, 255);
+  } 
+  else if (valor < 2730) {
+    verde = map(valor, 1366, 2730, 0, 255);
+  } 
+  else {
+    azul = map(valor, 2731, 4095, 0, 255);
+  }
+
+  ledcAttachPin(r, 0);
+  ledcAttachPin(g, 1);
+  ledcAttachPin(b, 2);
+
+  ledcWrite(0, vermelho);
+  ledcWrite(1, verde);
+  ledcWrite(2, azul);
+
+  Serial.print("R:");
+  Serial.print(vermelho);
+  Serial.print(" G:");
+  Serial.print(verde);
+  Serial.print(" B:");
+  Serial.println(azul);
+
+  delay(50);
+}
