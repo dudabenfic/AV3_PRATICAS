@@ -1,0 +1,48 @@
+int led1 = 2;
+int led2 = 4;
+
+int botaoAlterna = 12;
+int botaoInterrupt = 13;
+
+volatile bool sistemaLigado = true;
+bool estado = 0;
+
+void IRAM_ATTR toggleSistema() {
+  sistemaLigado = !sistemaLigado;
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(led1, OUTPUT);
+  pinMode(led2, OUTPUT);
+
+  pinMode(botaoAlterna, INPUT_PULLUP);
+  pinMode(botaoInterrupt, INPUT_PULLUP);
+
+  attachInterrupt(digitalPinToInterrupt(botaoInterrupt), toggleSistema, FALLING);
+}
+
+void loop() {
+
+  if (!sistemaLigado) {
+    digitalWrite(led1, LOW);
+    digitalWrite(led2, LOW);
+    Serial.println("Sistema desligado");
+    delay(200);
+    return;
+  }
+
+  if (digitalRead(botaoAlterna) == LOW) {
+    estado = !estado;
+    delay(250);
+  }
+
+  digitalWrite(led1, estado ? HIGH : LOW);
+  digitalWrite(led2, estado ? LOW : HIGH);
+
+  Serial.print("LED Ativo: ");
+  Serial.println(estado ? "LED1" : "LED2");
+
+  delay(100);
+}
