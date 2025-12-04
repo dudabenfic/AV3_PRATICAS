@@ -1,0 +1,15 @@
+int led = 2;
+int botao = 4;
+
+void setup() {
+  pinMode(led, OUTPUT);
+  pinMode(botao, INPUT_PULLUP); // botão para GND
+}
+
+void loop() {
+  if (digitalRead(botao) == LOW) { 
+    digitalWrite(led, HIGH);
+  } else {
+    digitalWrite(led, LOW);
+  }
+}
