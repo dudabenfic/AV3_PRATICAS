@@ -1,0 +1,56 @@
+#include <WiFi.h>
+
+const char* ssid     = "SEU_WIFI";
+const char* password = "SUA_SENHA";
+
+void setup() {
+  Serial.begin(115200);
+
+  // ------ MOSTRAR ENDEREÇO MAC DO ESP32 ------
+  Serial.print("MAC Address: ");
+  Serial.println(WiFi.macAddress());
+
+  // ------ ESCANEAR REDES WIFI ------
+  Serial.println("\nEscaneando redes...");
+  int n = WiFi.scanNetworks();
+
+  if (n == 0) {
+    Serial.println("Nenhuma rede encontrada.");
+  } else {
+    for (int i = 0; i < n; i++) {
+      Serial.print(i + 1);
+      Serial.print(": ");
+      Serial.print(WiFi.SSID(i));
+      Serial.print(" | RSSI: ");
+      Serial.print(WiFi.RSSI(i));
+      Serial.println(" dBm");
+    }
+  }
+
+  // ------ CONECTAR AO WIFI ------
+  Serial.print("\nConectando ao WiFi...");
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("\nConectado!");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+
+  Serial.print("Gateway: ");
+  Serial.println(WiFi.gatewayIP());
+
+  Serial.print("DNS: ");
+  Serial.println(WiFi.dnsIP());
+
+  Serial.print("RSSI (força do sinal): ");
+  Serial.println(WiFi.RSSI());
+}
+
+void loop() {
+  // Mantém a conexão
+  delay(2000);
+}
