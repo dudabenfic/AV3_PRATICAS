@@ -1,0 +1,214 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <HTTPClient.h>
+#include <DHT.h>
+#include <ESP32Servo.h>
+
+// ======= CONFIG WIFI & MQTT (ATENÇÃO: PREENCHA SUAS CREDENCIAIS AQUI) =======
+const char* WIFI_SSID   = "A14 de Guilherme";   // <--- MUDAR
+const char* WIFI_PASSWORD = "bongas123";  // <--- MUDAR
+
+const char* MQTT_BROKER  = "broker.mqtt.cool";
+const int  MQTT_PORT   = 1883;
+const char* MQTT_CLIENTID = "ESP32_RoboServos";
+const char* TOPIC_DATA  = "robo/sensores"; // Tópico para publicar dados de sensores
+const char* TOPIC_SERVOS = "esp32/robo/comando"; // Tópico para receber comandos (o mesmo do joystick)
+
+// ======= CALLMEBOT (Se aplicável) =======
+const char* CALLMEBOT_PHONE = "557192533547"; // 55+DDD+número
+const char* CALLMEBOT_APIKEY = "8621488";
+
+// ======= PINAGEM =======
+#define DHTPIN   33
+#define DHTTYPE   DHT11
+#define PIR_PIN   35 // Sensor de Presença
+#define LDR_PIN   34 // Sensor de Luminosidade
+#define LED_VERDE  26 // LED para baixa probabilidade
+#define LED_VERMELHO 32 // LED para alta probabilidade
+#define SERVO1_PIN 18 // Servo do lado Esquerdo
+#define SERVO2_PIN 19 // Servo do lado Direito
+
+// ======= OBJETOS =======
+WiFiClient espClient;
+PubSubClient mqttClient(espClient);
+DHT dht(DHTPIN, DHTTYPE);
+Servo servo1; // Servo Esquerdo
+Servo servo2; // Servo Direito
+
+// ======= VARIÁVEIS =======
+unsigned long lastPublish = 0;
+const unsigned long PUBLISH_INTERVAL = 2000;
+const int LDR_THRESHOLD = 1500;
+
+bool alertSent = false;
+unsigned long lastCallmebotTime = 0;
+const unsigned long CALLMEBOT_COOLDOWN = 5UL * 60UL * 1000UL;
+                                                             
+// Define os ângulos para os servos de rotação contínua:
+// 90 (Stop), 40 (Forward), 140 (Reverse)
+const int SERVO_STOP = 90;
+const int SERVO_FWD  = 40; // Ajuste conforme necessário
+const int SERVO_REV  = 140; // Ajuste conforme necessário
+
+// ======= FUNÇÕES AUXILIARES =======
+
+// Função para enviar alertas via CallMeBot (WhatsApp)
+void sendCallmebotAlert(const String &msg) {
+ unsigned long now = millis();
+ if (now - lastCallmebotTime < CALLMEBOT_COOLDOWN) return;
+ if (WiFi.status() != WL_CONNECTED) return;
+
+ HTTPClient http;
+ String text = msg;
+ text.replace(" ", "%20");
+ String url = "https://api.callmebot.com/whatsapp.php?phone=" + String(CALLMEBOT_PHONE) +
+       "&text=" + text + "&apikey=" + String(CALLMEBOT_APIKEY);
+ http.begin(url);
+ http.GET();
+ http.end();
+
+ lastCallmebotTime = now;
+ alertSent = true;
+}
+
+// Função para calcular a probabilidade (permanece inalterada)
+int calcularProbabilidade(float tempC, float hum, int ldrVal, bool pres) {
+ int prob = 0;
+ if (tempC >= 15 && tempC <= 30) prob += 25;
+ if (hum  >= 40 && hum <= 70) prob += 25;
+ if (ldrVal >= LDR_THRESHOLD)  prob += 20;
+ if (pres)            prob += 30;
+ return min(prob, 100);
+}
+
+// ======= CALLBACK MQTT (MODIFICADO) =======
+// Agora espera comandos textuais: "Frente", "Trás", "Parado", "LIGAR", "DESLIGAR"
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+ String msg;
+ for (unsigned int i = 0; i < length; i++) msg += (char)payload[i];
+
+ // Converte para maiúsculas para facilitar a comparação
+ msg.toUpperCase();
+
+ if (msg.indexOf("LIGAR") != -1) {
+  Serial.println("Robô LIGADO.");
+ }
+ else if (msg.indexOf("FRENTE") != -1) {
+  // Servo 1 (Esquerda) FWD, Servo 2 (Direita) FWD
+  servo1.write(SERVO_FWD);
+  servo2.write(SERVO_REV);
+  Serial.println("Movendo para FRENTE.");
+ }
+ else if (msg.indexOf("TRÁS") != -1) {
+  // Servo 1 (Esquerda) REV, Servo 2 (Direita) REV
+  servo1.write(SERVO_REV);
+  servo2.write(SERVO_FWD);
+  Serial.println("Movendo para TRÁS.");
+ }
+ else if (msg.indexOf("ESQUERDA") != -1) {
+  // Curva à esquerda: Roda esquerda STOP, Roda direita FWD (Giro sobre o eixo parado)
+  servo1.write(SERVO_STOP);
+  servo2.write(SERVO_REV);
+  Serial.println("Movendo para ESQUERDA.");
+ }
+ else if (msg.indexOf("DIREITA") != -1) {
+  // Curva à direita: Roda esquerda FWD, Roda direita STOP (Giro sobre o eixo parado)
+  servo1.write(SERVO_FWD);
+  servo2.write(SERVO_STOP);
+  Serial.println("Movendo para DIREITA.");
+ }else {
+  servo1.write(SERVO_STOP);
+  servo2.write(SERVO_STOP);
+ }
+}
+
+// Função de reconexão MQTT (permanece inalterada)
+void reconnectMQTT() {
+ while (!mqttClient.connected()) {
+  Serial.print("Conectando ao MQTT...");
+  if (mqttClient.connect(MQTT_CLIENTID)) {
+   Serial.println("Conectado!");
+   // Subscreve o tópico de comando
+   mqttClient.subscribe(TOPIC_SERVOS);
+  } else {
+   Serial.print("Falhou rc=");
+   Serial.println(mqttClient.state());
+   delay(2000);
+  }
+ }
+}
+
+// ======= SETUP =======
+void setup() {
+ Serial.begin(115200);
+ pinMode(LED_VERDE, OUTPUT);
+ pinMode(LED_VERMELHO, OUTPUT);
+ pinMode(PIR_PIN, INPUT);
+
+ dht.begin();
+ // Anexa os servos
+ servo1.attach(SERVO1_PIN);
+ servo2.attach(SERVO2_PIN);
+ // Posição inicial (Parado)
+ servo1.write(SERVO_STOP);
+ servo2.write(SERVO_STOP);
+
+ WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+ Serial.print("Conectando WiFi");
+ while (WiFi.status() != WL_CONNECTED) {
+  delay(500); Serial.print(".");
+ }
+ Serial.println("\nWiFi conectado!");
+ Serial.println(WiFi.localIP());
+
+ mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
+ mqttClient.setCallback(mqttCallback);
+}
+
+// ======= LOOP =======
+void loop() {
+ if (!mqttClient.connected()) reconnectMQTT();
+ mqttClient.loop();
+
+ // Lógica de publicação de sensores
+ unsigned long now = millis();
+ if (now - lastPublish >= PUBLISH_INTERVAL) {
+  lastPublish = now;
+
+  float tempC = dht.readTemperature();
+  float hum  = dht.readHumidity();
+  bool pres  = digitalRead(PIR_PIN);
+  int ldrVal = analogRead(LDR_PIN);
+
+  if (isnan(tempC) || isnan(hum)) {
+   Serial.println("Falha leitura DHT!");
+   tempC = hum = -1;
+  }
+
+  int prob = calcularProbabilidade(tempC, hum, ldrVal, pres);
+
+  // LEDs e alerta
+  if (prob > 75) {
+   digitalWrite(LED_VERDE, LOW);
+   digitalWrite(LED_VERMELHO, HIGH);
+   if (!alertSent)
+    sendCallmebotAlert("Alerta! Alta probabilidade de vida detectada!");
+  } else {
+   digitalWrite(LED_VERDE, HIGH);
+   digitalWrite(LED_VERMELHO, LOW);
+   alertSent = false;
+  }
+
+  // Publica dados em JSON
+  String payload = "{";
+  payload += "\"temp\":" + String(tempC,1) + ",";
+  payload += "\"umid\":" + String(hum,1) + ",";
+  payload += "\"luz\":" + String(ldrVal) + ",";
+  payload += "\"presenca\":" + String(pres) + ",";
+  payload += "\"prob\":" + String(prob);
+  payload += "}";
+
+  mqttClient.publish(TOPIC_DATA, payload.c_str());
+  Serial.println("Publicado: " + payload);
+ }
+}
