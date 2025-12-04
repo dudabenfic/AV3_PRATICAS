@@ -1,0 +1,273 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <ESP32Servo.h>
+
+// --- Configurações de Rede e MQTT ---
+const char* WIFI_SSID = "CIMATEC-VISITANTE"; // SSID padrão do Wokwi
+const char* WIFI_PASSWORD = "";        // Senha padrão do Wokwi
+const char* MQTT_BROKER = "test.mosquitto.org";
+const int MQTT_PORT = 1883;
+const char* MQTT_CLIENT_ID = "esp32-fechadura-12";
+
+// --- Tópicos MQTT ---
+const char* LED_STATE_TOPIC = "projeto/led/estado";
+const char* SENSOR_STATE_TOPIC = "projeto/sensor/estado";
+const char* DOOR_STATE_TOPIC = "projeto/porta/estado";
+const char* INVASION_TOPIC = "projeto/invasao";
+const char* MOTOR_COMMAND_TOPIC = "projeto/porta/comando";
+
+// --- MAPEAMENTO DE PINOS (APROVEITANDO A MONTAGEM EXISTENTE) ---
+const int PRESENCE_SENSOR_PIN = 4;   // <-- Usando o pino do antigo DHT22
+const int BUTTON_PIN = 25;           // <-- Mantido do projeto original
+const int BUZZER_PIN = 33;           // <-- Mantido do projeto original
+const int RED_LED_PIN = 26;          // <-- Mantido do projeto original (LED de Alarme)
+const int GREEN_LED_PIN = 34;        // <-- Usando o LED verde para status do sistema
+const int SERVO_PIN = 27;            // <-- Usando o pino do antigo Servo 1
+
+// --- Configurações do Servo ---
+const int SERVO_POS_FECHADA = 90;
+const int SERVO_POS_ABERTA = 0;
+
+// --- Variáveis de Controle de Estado ---
+String doorStatusStr = "FECHADO";
+volatile bool alarmSystemEnabled = true;
+bool invasionActive = false;
+
+// --- Instâncias ---
+WiFiClient espClient;
+PubSubClient client(espClient);
+Servo doorServo;
+
+// --- Função da Interrupção ---
+void IRAM_ATTR toggleAlarmSystem() {
+  // Simples debounce por tempo
+  static unsigned long last_interrupt_time = 0;
+  unsigned long interrupt_time = millis();
+  if (interrupt_time - last_interrupt_time > 500) {
+    alarmSystemEnabled = !alarmSystemEnabled;
+    last_interrupt_time = interrupt_time;
+  }
+}
+
+// Conecta ao Wi-Fi
+void setup_wifi() {
+  delay(10);
+Serial.println("\nEscaneando redes");
+  int n = WiFi.scanNetworks();
+  
+  if (n == 0) {
+    Serial.println("Nenhuma rede encontrada. Reinicie o ESP32.");
+    while (true) {}
+  }
+  
+ 
+  Serial.println("\nRedes encontradas:");
+  for (int i = 0; i < n; ++i) {
+    Serial.printf("%d: %s (%d dBm) %s\n", i + 1, WiFi.SSID(i).c_str(), WiFi.RSSI(i), (WiFi.encryptionType(i) == WIFI_AUTH_OPEN) ? "Aberta" : "Protegida");
+    delay(100);
+  }
+  
+  int network_index = -1;
+  while (network_index < 0 || network_index >= n) {
+    Serial.print("\nDigite o numero da rede para conectar (1-");
+    Serial.print(n);
+    Serial.print(")\n");
+    
+    while (!Serial.available()) {
+      delay(100);
+    }
+    
+    String input = Serial.readStringUntil('\n');
+    network_index = input.toInt() - 1;
+    
+    if (network_index < 0 || network_index >= n) {
+      Serial.println("\nEntrada invalida. Tente novamente.\n");
+    }
+  }
+  
+  String ssid = WiFi.SSID(network_index);
+  String password = "";
+  
+  // Pede a senha se a rede for protegida
+  if (WiFi.encryptionType(network_index) != WIFI_AUTH_OPEN) {
+    Serial.print("\n\nDigite a senha para ");
+    Serial.print(ssid);
+    Serial.print(": ");
+    
+    while (!Serial.available()) {
+      delay(100);
+    }
+    
+    password = Serial.readStringUntil('\n');
+  }
+  
+  // Conecta-se à rede selecionada
+  Serial.print("\nConectando a ");
+  Serial.print(ssid);
+  Serial.print("...");
+  
+  WiFi.begin(ssid, password);
+  
+  // Aguarda a conexão
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+  }
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\nConectado!");
+    Serial.print("IP: ");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("\nFalha na conexao. Reinicie o ESP32.");
+  }
+  Serial.println("\nWiFi conectado!");
+  Serial.print("Endereço IP: ");
+  Serial.println(WiFi.localIP());
+}
+
+// Publica o estado de todos os componentes
+void publishStates() {
+  String ledStatusStr = (invasionActive) ? "ON" : "OFF";
+  String sensorStatusStr = (digitalRead(PRESENCE_SENSOR_PIN)) ? "ON" : "OFF";
+
+  Serial.println("---- Status Atual ----");
+  Serial.println("Sistema Armado: " + String(alarmSystemEnabled ? "SIM" : "NAO"));
+  Serial.println("LED de Alarme: " + ledStatusStr);
+  Serial.println("Sensor de Presença: " + sensorStatusStr);
+  Serial.println("Estado da Fechadura: " + doorStatusStr);
+  Serial.println("----------------------");
+
+  if (client.connected()) {
+    client.publish(LED_STATE_TOPIC, ledStatusStr.c_str(), true);
+    client.publish(SENSOR_STATE_TOPIC, sensorStatusStr.c_str(), true);
+    client.publish(DOOR_STATE_TOPIC, doorStatusStr.c_str(), true);
+  }
+}
+
+// Função de callback para mensagens MQTT
+void callback(char* topic, byte* payload, unsigned int length) {
+  String message;
+  for (int i = 0; i < length; i++) {
+    message += (char)payload[i];
+  }
+  message.toUpperCase();
+  Serial.printf("Comando MQTT recebido: %s no tópico %s\n", message.c_str(), topic);
+
+  if (String(topic) == MOTOR_COMMAND_TOPIC) {
+    if (invasionActive) {
+      Serial.println("AVISO: A fechadura não pode ser aberta durante uma invasão!");
+      client.publish(DOOR_STATE_TOPIC, "BLOQUEADA - INVASAO", true);
+      return;
+    }
+    
+    if (message == "ABERTO") {
+      doorServo.write(SERVO_POS_ABERTA);
+      doorStatusStr = "ABERTO";
+      Serial.println("Fechadura ABERTA");
+    } else if (message == "FECHADO") {
+      doorServo.write(SERVO_POS_FECHADA);
+      doorStatusStr = "FECHADO";
+      Serial.println("Fechadura FECHADA");
+    }
+    publishStates();
+  }
+}
+
+// Reconecta ao broker MQTT
+void reconnect() {
+  while (!client.connected()) {
+    Serial.print("Tentando conectar ao Broker MQTT...");
+    if (client.connect(MQTT_CLIENT_ID)) {
+      Serial.println("Conectado!");
+      client.subscribe(MOTOR_COMMAND_TOPIC);
+
+      // <-- ALTERAÇÃO 1: Garante que o status inicial seja "NORMAL" ao conectar/reconectar
+      client.publish(INVASION_TOPIC, "NORMAL", true);
+      
+      publishStates();
+    } else {
+      Serial.printf("Falhou, rc=%d. Tentando novamente\n", client.state());
+    }
+  }
+}
+
+// --- Setup ---
+void setup() {
+  Serial.begin(115200);
+  
+  // Pinos de entrada
+  pinMode(PRESENCE_SENSOR_PIN, INPUT);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+  // Pinos de saída
+  pinMode(BUZZER_PIN, OUTPUT);
+  pinMode(RED_LED_PIN, OUTPUT);
+  pinMode(GREEN_LED_PIN, OUTPUT);
+
+  // Garante que os atuadores comecem desligados
+  digitalWrite(RED_LED_PIN, LOW);
+  digitalWrite(GREEN_LED_PIN, LOW);
+  noTone(BUZZER_PIN);
+
+  // Configuração do Servo
+  doorServo.attach(SERVO_PIN);
+  doorServo.write(SERVO_POS_FECHADA);
+
+  // Interrupção
+  attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), toggleAlarmSystem, FALLING);
+
+  // Conexão
+  setup_wifi();
+  client.setServer(MQTT_BROKER, MQTT_PORT);
+  client.setCallback(callback);
+
+  Serial.println("Sistema de Seguranca Iniciado.");
+}
+
+// --- Loop principal ---
+void loop() {
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.loop();
+
+  // Atualiza o LED de status (verde)
+  digitalWrite(GREEN_LED_PIN, alarmSystemEnabled);
+  
+  // Lógica do Sistema de Alarme
+  if (alarmSystemEnabled) {
+    bool presenceDetected = digitalRead(PRESENCE_SENSOR_PIN);
+    
+    if (presenceDetected && !invasionActive) {
+      invasionActive = true;
+      digitalWrite(RED_LED_PIN, HIGH);
+      tone(BUZZER_PIN, 1500); // Buzzer toca continuamente até ser resetado
+      
+      Serial.println("!!!!!!!! INVASÃO DETECTADA !!!!!!!!");
+      if (client.connected()) {
+        client.publish(INVASION_TOPIC, "INVASAO", true);
+      }
+      publishStates();
+    }
+  } else {
+    // Se o sistema for desativado, reseta o alarme
+    if (invasionActive) {
+      invasionActive = false;
+      digitalWrite(RED_LED_PIN, LOW);
+      noTone(BUZZER_PIN);
+      Serial.println("Sistema desativado. Alarme resetado.");
+      
+      // <-- ALTERAÇÃO 2: Publica "NORMAL" para limpar o status de invasão
+      if (client.connected()) {
+        client.publish(INVASION_TOPIC, "NORMAL", true);
+      }
+      
+      publishStates(); // Atualiza os outros tópicos
+    }
+  }
+  
+  delay(20);
+}

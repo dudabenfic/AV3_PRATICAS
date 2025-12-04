@@ -1,0 +1,77 @@
+#include <WiFi.h>
+
+// Defina o nome e senha da sua rede WiFi
+const char* ssid     = "CIMATEC-VISITANTE";
+const char* password = "";
+
+// Definição dos pinos dos LEDs
+const int ledVerde = 27;    
+const int ledVermelho = 26; 
+const int ledInterno = 2;  
+
+void setup() {
+  Serial.begin(115200);
+
+  // Configuração dos LEDs
+  pinMode(ledVerde, OUTPUT);
+  pinMode(ledVermelho, OUTPUT);
+  pinMode(ledInterno, OUTPUT);
+
+  // Escaneia redes WiFi
+  Serial.println("Escaneando redes WiFi...");
+  int n = WiFi.scanNetworks();
+  if (n == 0) {
+    Serial.println("Nenhuma rede encontrada.");
+  } else {
+    for (int i = 0; i < n; i++) {
+      Serial.println(n);
+      Serial.print("SSID: ");
+      Serial.print(WiFi.SSID(i));
+      Serial.print("  RSSI: ");
+      Serial.print(WiFi.RSSI(i));
+      Serial.println(" dBm");
+    }
+  }
+  Serial.println("---------------------------");
+
+  // Conectar à rede WiFi
+  WiFi.begin(ssid, password);
+  Serial.print("Conectando ao WiFi");
+
+  // Espera até conectar
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+    digitalWrite(ledVermelho, HIGH);
+    digitalWrite(ledVerde, LOW);
+  }
+
+  // Conectado
+  digitalWrite(ledVerde, HIGH);
+  digitalWrite(ledVermelho, LOW);
+
+  Serial.println("\nConectado!");
+  Serial.print("Endereço MAC: ");
+  Serial.println(WiFi.macAddress());
+
+  Serial.print("Endereço IP: ");
+  Serial.println(WiFi.localIP());
+}
+
+void loop() {
+  // Piscar LED interno sempre
+  digitalWrite(ledInterno, HIGH);
+  delay(500);
+  digitalWrite(ledInterno, LOW);
+  delay(500);
+
+  // Verificar status da conexão
+  if (WiFi.status() == WL_CONNECTED) {
+    digitalWrite(ledVerde, HIGH);
+    digitalWrite(ledVermelho, LOW);
+  } else {
+    digitalWrite(ledVerde, LOW);
+    digitalWrite(ledVermelho, HIGH);
+  }
+}
+

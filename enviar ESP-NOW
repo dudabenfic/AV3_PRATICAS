@@ -1,0 +1,174 @@
+#include <esp_now.h>
+#include <WiFi.h>
+#include <DHT.h>
+#include <HCSR04.h>
+
+#define PIN_LED_VERDE 27
+#define PIN_LED_VERMELHO 26
+#define PIN_PIR 14
+#define PIN_LDR 34
+#define PIN_DHT 33
+#define PIN_TRIG 22
+#define PIN_ECHO 23
+#define PIN_ENVIO 18
+#define PIN_ERRO 5
+
+#define DHT_TYPE DHT11
+#define ALTURA_TANQUE_CM 50
+#define NIVEL_ALERTA 20
+
+unsigned long lastBlinkTime = 0; 
+long blinkInterval = 200; 
+
+uint8_t mac_address_monitoramento[] = {0xE0, 0x5A, 0x1B, 0xA0, 0x62, 0x84};
+
+const long intervalo_leitura = 2000;
+unsigned long timestamp_leitura_anterior = 0;
+
+DHT dht(PIN_DHT, DHT_TYPE);
+UltraSonicDistanceSensor sensorUltrassonico(PIN_TRIG, PIN_ECHO);
+
+typedef struct struct_message {
+float nivel_tinta;
+float temperatura;
+float umidade;
+int luminosidade;
+int presenca;
+unsigned long timestamp;
+} struct_message;
+
+struct_message myData;
+esp_now_peer_info_t peerInfo;
+
+void lerSensores();
+void atualizarStatusLocal();
+void enviarDadosEspNow();
+
+void OnDataSent(const esp_now_send_info_t *tx_info, esp_now_send_status_t status) {
+if (status != ESP_NOW_SEND_SUCCESS) {
+  Serial.println("Falha no envio ESPNOW");
+  blinkNonBlocking(PIN_ERRO, blinkInterval);
+}
+else{
+  blinkNonBlocking(PIN_ENVIO, blinkInterval);
+}
+}
+
+void setup() {
+Serial.begin(115200);
+Serial.println("Iniciando ESP32 Chão de Fábrica...");
+
+pinMode(PIN_LED_VERDE, OUTPUT);
+pinMode(PIN_LED_VERMELHO, OUTPUT);
+pinMode(PIN_PIR, INPUT);
+pinMode(PIN_LDR, INPUT);
+pinMode(PIN_ENVIO, OUTPUT);
+pinMode(PIN_ERRO, OUTPUT);
+
+dht.begin();
+WiFi.mode(WIFI_STA);
+
+if (esp_now_init() != ESP_OK) {
+Serial.println("Erro ao inicializar ESP-NOW");
+return;
+}
+
+esp_now_register_send_cb(OnDataSent);
+memcpy(peerInfo.peer_addr, mac_address_monitoramento, 6);
+peerInfo.channel = 0;
+peerInfo.encrypt = false;
+
+if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+Serial.println("Falha ao adicionar peer");
+return;
+}
+
+Serial.println("Setup concluído. Iniciando leituras...");
+}
+
+void loop() {
+if (millis() - timestamp_leitura_anterior >= intervalo_leitura) {
+timestamp_leitura_anterior = millis();
+lerSensores();
+atualizarStatusLocal();
+enviarDadosEspNow();
+}
+}
+
+void lerSensores() {
+float distancia_cm = sensorUltrassonico.measureDistanceCm();
+
+if (isnan(distancia_cm) || distancia_cm <= 0) {
+distancia_cm = ALTURA_TANQUE_CM; // Se leitura inválida, assume tanque vazio
+}
+
+myData.nivel_tinta = 100.0 * (1.0 - (distancia_cm / ALTURA_TANQUE_CM));
+if (myData.nivel_tinta < 0) myData.nivel_tinta = 0;
+if (myData.nivel_tinta > 100) myData.nivel_tinta = 100;
+
+myData.temperatura = dht.readTemperature();
+myData.umidade = dht.readHumidity();
+myData.luminosidade = analogRead(PIN_LDR);
+myData.presenca = digitalRead(PIN_PIR);
+myData.timestamp = millis();
+}
+
+void atualizarStatusLocal() {
+if (isnan(myData.temperatura) || isnan(myData.umidade)) {
+Serial.println("Falha ao ler o sensor DHT!");
+}
+
+Serial.println("---------------------------------");
+Serial.print("Nível do tanque: ");
+Serial.print(myData.nivel_tinta, 1);
+Serial.println("%");
+Serial.print("Temperatura: ");
+Serial.print(myData.temperatura, 1);
+Serial.print(" ºC | Umidade: ");
+Serial.print(myData.umidade, 1);
+Serial.println("%");
+Serial.print("Luminosidade: ");
+Serial.println(myData.luminosidade);
+Serial.print("Presença: ");
+Serial.println(myData.presenca == 1 ? "Presença detectada" : "Sem presença");
+
+if (myData.nivel_tinta < NIVEL_ALERTA) {
+digitalWrite(PIN_LED_VERMELHO, HIGH);
+digitalWrite(PIN_LED_VERDE, LOW);
+Serial.println("Status: Alerta! Nível de tinta baixo.");
+} else {
+digitalWrite(PIN_LED_VERMELHO, LOW);
+digitalWrite(PIN_LED_VERDE, HIGH);
+Serial.println("Status: Operação normal");
+}
+}
+void blinkNonBlocking(int ledPin, long interval) {
+  unsigned long currentMillis = millis();
+  if (currentMillis - lastBlinkTime >= interval) {
+    lastBlinkTime = currentMillis;
+    int ledState = digitalRead(ledPin);
+
+    if (ledState == LOW) {
+      digitalWrite(ledPin, HIGH); 
+    } else {
+      digitalWrite(ledPin, LOW);  
+    }
+  }
+}
+
+
+void enviarDadosEspNow() {
+esp_err_t result = esp_now_send(mac_address_monitoramento, (uint8_t *) &myData, sizeof(myData));
+if (result == ESP_OK) {
+Serial.print("Pacote enviado com sucesso: {");
+Serial.print("nivel="); Serial.print(myData.nivel_tinta, 1);
+Serial.print("%, temp="); Serial.print(myData.temperatura, 1);
+Serial.print("C, umidade="); Serial.print(myData.umidade, 1);
+Serial.print("%, luz="); Serial.print(myData.luminosidade);
+Serial.print(", presença="); Serial.println(myData.presenca);
+Serial.println("}");
+}
+else{
+  
+}
+}

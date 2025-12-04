@@ -1,0 +1,255 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <esp_now.h>
+#include <MD_Parola.h>
+#include <MD_MAX72xx.h>
+#include "esp_wpa2.h" // 🔹 Necessário para WPA2 Enterprise
+#include "esp_wifi.h"
+
+// ===================================
+// --- CONFIGURAÇÃO DO HARDWARE ---
+// ===================================
+#define HARDWARE_TYPE MD_MAX72XX::FC16_HW
+#define MAX_DEVICES 1
+#define CS_PIN 5
+
+#define LED_VERDE 2
+#define LED_VERMELHO 4
+
+// ===================================
+// --- ESTRUTURA DOS DADOS (ESP-NOW) ---
+// ===================================
+typedef struct struct_message {
+float nivel_tinta;
+float temperatura;
+float umidade;
+int luminosidade;
+int presenca;
+unsigned long timestamp;
+} struct_message;
+
+const unsigned long TIMEOUT_MS = 5000;
+#define SCROLL_SPEED 75
+
+struct_message data;
+unsigned long lastReceivedTime = 0;
+bool dataReceivedFlag = false;
+
+MD_Parola P = MD_Parola(HARDWARE_TYPE, CS_PIN, MAX_DEVICES);
+int currentScreen = 0;
+char displayBuffer[50];
+bool redLedStatus = false;
+bool greenLedStatus = false;
+
+// ===================================
+// --- CONFIGURAÇÃO DO SERVIDOR ---
+// ===================================
+const char* SERVER_URL = "https://bookish-garbanzo-v969qx4jvvw3694x-8000.app.github.dev/dados";
+
+// ===================================
+// --- CREDENCIAIS DA REDE ---
+// ===================================
+// ⚙️ Use ESTE bloco se sua rede for corporativa (WPA2-Enterprise)
+#define USE_ENTERPRISE_WIFI true // mude para false se quiser Wi-Fi normal
+
+const char* ssid = "CIMATEC-WCORP";
+const char* username = "ana.maciel";
+const char* password = "Me-11377";
+
+// Caso queira Wi-Fi comum, preencha aqui:
+//const char* ssid_normal = "CIMATEC-WIFI";
+//const char* password_normal = "";
+
+// ===================================
+// --- FUNÇÃO: Conectar ao Wi-Fi ---
+// ===================================
+void conectarWiFi() {
+WiFi.mode(WIFI_MODE_STA);
+if (USE_ENTERPRISE_WIFI) {
+Serial.println("🔐 Conectando à rede corporativa (WPA2-Enterprise)...");
+esp_wpa2_config_t config = WPA2_CONFIG_INIT_DEFAULT();
+esp_wifi_sta_wpa2_ent_set_identity((uint8_t *)username, strlen(username));
+esp_wifi_sta_wpa2_ent_set_username((uint8_t *)username, strlen(username));
+esp_wifi_sta_wpa2_ent_set_password((uint8_t *)password, strlen(password));
+esp_wpa2_set_config(&config);
+esp_wpa2_enable();
+
+WiFi.begin(ssid);
+} else {
+Serial.println("📶 Conectando à rede Wi-Fi comum...");
+WiFi.begin(ssid_normal, password_normal);
+}
+
+Serial.print("Conectando");
+int tentativas = 0;
+while (WiFi.status() != WL_CONNECTED && tentativas < 30) {
+delay(500);
+Serial.print(".");
+tentativas++;
+}
+
+if (WiFi.status() == WL_CONNECTED) {
+Serial.println("\n✅ WiFi conectado!");
+Serial.print("Endereço IP: ");
+Serial.println(WiFi.localIP());
+} else {
+Serial.println("\n❌ Falha ao conectar ao WiFi!");
+}
+}
+
+// ===================================
+// --- FUNÇÃO: Enviar dados ao FastAPI ---
+// ===================================
+void enviarParaServidor(struct_message d) {
+if (WiFi.status() == WL_CONNECTED) {
+HTTPClient http;
+http.begin(SERVER_URL);
+http.addHeader("Content-Type", "application/json");
+
+String json = "{";
+json += "\"nivel\": " + String(d.nivel_tinta, 1) + ",";
+json += "\"temperatura\": " + String(d.temperatura, 2) + ",";
+json += "\"umidade\": " + String(d.umidade, 2) + ",";
+json += "\"luminosidade\": " + String(d.luminosidade) + ",";
+json += "\"presenca\": " + String(d.presenca) + ",";
+json += "\"timestamp\": " + String(d.timestamp);
+json += "}";
+
+Serial.println("📡 Enviando para servidor:");
+Serial.println(json);
+
+int httpResponseCode = http.POST(json);
+Serial.print("Código HTTP: ");
+Serial.println(httpResponseCode);
+
+if (httpResponseCode > 0) {
+  String response = http.getString();
+  Serial.print("Resposta: ");
+  Serial.println(response);
+} else {
+  Serial.println("❌ Falha ao enviar dados!");
+}
+
+http.end();
+} else {
+Serial.println("⚠️ WiFi desconectado. Não foi possível enviar dados.");
+}
+}
+
+// ===================================
+// --- FUNÇÃO DE ATUALIZAR LEDs ---
+// ===================================
+void updateLEDs() {
+unsigned long tempo_atual = millis();
+bool green = greenLedStatus;
+bool red = redLedStatus;
+
+if (dataReceivedFlag) {
+green = true;
+red = false;
+lastReceivedTime = tempo_atual;
+dataReceivedFlag = false;
+} else if (tempo_atual - lastReceivedTime > TIMEOUT_MS) {
+green = false;
+red = true;
+} else {
+green = true;
+red = false;
+}
+
+if (green != greenLedStatus) {
+digitalWrite(LED_VERDE, green ? HIGH : LOW);
+greenLedStatus = green;
+}
+
+if (red != redLedStatus) {
+digitalWrite(LED_VERMELHO, red ? HIGH : LOW);
+redLedStatus = red;
+}
+}
+
+// ===================================
+// --- FUNÇÃO DE TROCAR TELA ---
+// ===================================
+void nextScreen() {
+currentScreen = (currentScreen + 1) % 5;
+switch (currentScreen) {
+case 0:
+snprintf(displayBuffer, sizeof(displayBuffer), "NVL %.1f%% ", data.nivel_tinta);
+break;
+case 1:
+snprintf(displayBuffer, sizeof(displayBuffer), "TMP %.1f C ", data.temperatura);
+break;
+case 2:
+snprintf(displayBuffer, sizeof(displayBuffer), "UMD %.1f%% ", data.umidade);
+break;
+case 3:
+snprintf(displayBuffer, sizeof(displayBuffer), "LUX %d ", data.luminosidade);
+break;
+case 4:
+snprintf(displayBuffer, sizeof(displayBuffer), "PRS %s ", data.presenca ? "ON" : "OFF");
+break;
+}
+
+Serial.print("🛠️ Tela ");
+Serial.print(currentScreen + 1);
+Serial.print(": ");
+Serial.println(displayBuffer);
+
+P.displayText(displayBuffer, PA_LEFT, SCROLL_SPEED, 0, PA_SCROLL_LEFT, PA_SCROLL_LEFT);
+}
+
+// ===================================
+// --- CALLBACK DE RECEPÇÃO (ESP-NOW) ---
+// ===================================
+void OnDataRecv(const esp_now_recv_info *info, const uint8_t *data_recv, int len) {
+dataReceivedFlag = true;
+
+if (len == sizeof(struct_message)) {
+memcpy(&data, data_recv, sizeof(data));
+Serial.println("\n✅ Dados Recebidos via ESP-NOW");
+Serial.printf("Nível: %.1f | Temp: %.1f | Umid: %.1f | Lux: %d | Pres: %d\n",
+data.nivel_tinta, data.temperatura, data.umidade,
+data.luminosidade, data.presenca);
+
+enviarParaServidor(data);
+} else {
+Serial.println("❌ Pacote recebido inválido");
+}
+}
+
+// ===================================
+// --- SETUP ---
+// ===================================
+void setup() {
+Serial.begin(115200);
+Serial.println(WiFi.macAddress());
+
+pinMode(LED_VERDE, OUTPUT);
+pinMode(LED_VERMELHO, OUTPUT);
+
+conectarWiFi(); // 🔹 Nova função de conexão (Enterprise ou normal)
+
+if (esp_now_init() != ESP_OK) {
+Serial.println("Erro ao iniciar ESP-NOW");
+return;
+}
+esp_now_register_recv_cb(OnDataRecv);
+Serial.println("📡 ESP-NOW iniciado e aguardando dados...");
+
+P.begin();
+P.setIntensity(0, 4);
+P.displayClear();
+
+lastReceivedTime = millis();
+updateLEDs();
+nextScreen();
+}
+
+// ===================================
+// --- LOOP ---
+// ===================================
+void loop() {
+if (P.displayAnimate()) nextScreen();
+updateLEDs();
+}

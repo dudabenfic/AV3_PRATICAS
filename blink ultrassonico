@@ -1,0 +1,109 @@
+// Definição dos pinos
+const int TRIG_PIN = 5;  
+const int ECHO_PIN = 18; 
+const int ALERTA_PIN = 4; // Conectado ao Buzzer Ativo
+const int BOTAO_PIN = 2; // Conectado ao botão de interrupção
+
+// Definição do Limite de Alerta (em cm)
+const int LIMITE_CM = 10; 
+
+// Variáveis de Estado
+volatile bool sistemaAtivo = true; 
+long duracao;
+int distanciaCm;
+
+// --- Variáveis para Debounce ---
+// 'volatile' é necessário porque é alterada dentro da ISR (Interrupção)
+volatile unsigned long ultimaInterrupcao = 0; 
+const unsigned long TEMPO_DEBOUNCE = 200; // Tempo em milissegundos
+
+// --- Função de Interrupção (ISR) para Desligar com Debounce ---
+
+void desligaTudoISR() {
+  // 1. Verifica o tempo: Garantir que o tempo desde a última interrupção 
+  // seja maior que o TEMPO_DEBOUNCE (200ms).
+  if ((millis() - ultimaInterrupcao) > TEMPO_DEBOUNCE) {
+    
+    // 2. Processa o evento (somente se o debounce for aprovado)
+    sistemaAtivo = !sistemaAtivo; // Inverte o estado do sistema 
+    
+    // 3. Atualiza o tempo da última interrupção
+    ultimaInterrupcao = millis(); 
+
+    // 4. Ações de feedback (ATENÇÃO: Evite Serial.print() dentro de ISRs
+    // muito longas ou complexas, mas para este caso simples é aceitável no ESP32)
+    if (!sistemaAtivo) {
+      digitalWrite(ALERTA_PIN, LOW); // Garante que o alerta desligue
+      Serial.println(">>> SISTEMA DESATIVADO (Interrupcao Acionada) <<<");
+    } else {
+      Serial.println(">>> SISTEMA REATIVADO (Interrupcao Acionada) <<<");
+    }
+  }
+}
+
+// --- Setup ---
+
+void setup() {
+  Serial.begin(115200); 
+  
+  // Configuração dos Pinos
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT); 
+  pinMode(ALERTA_PIN, OUTPUT); 
+
+  // Configuração do Pino do Botão (INPUT_PULLUP)
+  pinMode(BOTAO_PIN, INPUT_PULLUP); 
+  
+  // Anexa a Interrupção Externa (acionada na borda de DESCIDA, HIGH para LOW)
+  attachInterrupt(digitalPinToInterrupt(BOTAO_PIN), desligaTudoISR, FALLING);
+  
+  digitalWrite(TRIG_PIN, LOW);
+  Serial.println("Sistema de Monitoramento Ultrassonico Pronto com Debounce.");
+}
+
+// --- Loop ---
+
+void loop() {
+  // Verifica se o sistema está ativo antes de continuar a medição
+  if (!sistemaAtivo) {
+    delay(100); 
+    return; 
+  }
+  
+  // 1. Envia pulso TRIG
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  
+  // 2. Mede a duração do pulso ECHO
+  duracao = pulseIn(ECHO_PIN, HIGH, 30000); 
+
+  // 3. Calcula a distância (em cm)
+  distanciaCm = duracao * 0.0343 / 2.0;
+
+  // --- Lógica de Alerta de Nível Alto (Buzzer) ---
+  
+  if (distanciaCm <= LIMITE_CM && duracao != 0) {
+    // Nível alto detectado -> Aciona o Buzzer!
+    digitalWrite(ALERTA_PIN, HIGH);
+    Serial.print("!!! ALERTA ATIVADO !!! Distancia: ");
+    Serial.print(distanciaCm);
+    Serial.println(" cm");
+  } else {
+    // Nível normal
+    digitalWrite(ALERTA_PIN, LOW); // Desliga o Buzzer
+    if (duracao != 0) {
+      Serial.print("Distancia: ");
+      Serial.print(distanciaCm);
+      Serial.println(" cm");
+    } else {
+      // Mensagem de falha apenas se o sistema estiver ativo e a leitura for zero
+      Serial.println("Leitura fora de alcance ou falha de eco."); 
+    }
+  }
+
+  // Pequeno atraso antes da próxima leitura
+  delay(500); 
+}
