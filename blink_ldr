@@ -1,0 +1,12 @@
+int ldr = 34; // pino ADC no ESP32
+
+void setup() {
+  Serial.begin(115200);
+}
+
+void loop() {
+  int luz = analogRead(ldr);
+  Serial.print("LDR: ");
+  Serial.println(luz);
+  delay(200);
+}
