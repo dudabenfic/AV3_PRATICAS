@@ -1,0 +1,13 @@
+int buzzer = 5;
+
+void setup() {
+  pinMode(buzzer, OUTPUT);
+}
+
+void loop() {
+  digitalWrite(buzzer, HIGH);  // Liga o buzzer
+  delay(500);
+
+  digitalWrite(buzzer, LOW);   // Desliga o buzzer
+  delay(500);
+}
